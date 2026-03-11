@@ -2,6 +2,13 @@
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import mlflow
+
+mlflow_uri = "http://localhost:5000/"
+mlflow_xp_id = 1
+
+mlflow.set_tracking_uri(mlflow_uri)
+mlflow.set_experiment(experiment_id=mlflow_xp_id)
 
 sns.set_style("whitegrid")
 sns.set_palette("husl")
@@ -39,10 +46,10 @@ X, y = df_train[feature_cols], df_train[target_col]
 
 from sklearn.model_selection import train_test_split
 X_train, X_test, y_train, y_test = train_test_split(X, y, 
-    test_size=0.25,
-    stratify=y,
-    shuffle=True,
-    random_state=42, 
+  test_size=0.25,
+  stratify=y,
+  shuffle=True,
+  random_state=42, 
   )
 
 
@@ -133,9 +140,11 @@ feature_list = selected_features['feature'].to_list()
 X_train = X_train[feature_list].copy()
 X_test = X_test[feature_list].copy()
 # %%
+from sklearn import pipeline
+from sklearn.ensemble import AdaBoostClassifier
 from sklearn.linear_model import LogisticRegression
 from feature_engine import discretisation, encoding
-from sklearn import pipeline
+from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 
 tree_discretisation = discretisation.DecisionTreeDiscretiser(
   variables=feature_list, 
@@ -149,51 +158,94 @@ ohe = encoding.OneHotEncoder(
   ignore_format=True,
   )
 
-lr = LogisticRegression(random_state=42)
+model = AdaBoostClassifier(
+  random_state=42,
+  learning_rate=1e-3,
+  n_estimators=400
+)
 
-# %%
+# model = LogisticRegression(random_state=42)
+
 model_pipeline = pipeline.Pipeline(
   steps=[
-    ('Discretizar', tree_discretisation),
+    ('Discretizer', tree_discretisation),
     ('One Hot', ohe),
-    ('Reg. Logistica', lr),
+    ('Logistic Regression', model ),
   ],
   )
 
-model_pipeline.fit(X_train, y_train)
-# %%
-from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
+with mlflow.start_run(run_name=model.__str__()):
+  mlflow.sklearn.autolog()
+  model_pipeline.fit(X_train, y_train)
 
-predict_proba = model_pipeline.predict_proba(X_train)[:, 1]
-predict = model_pipeline.predict(X_train)
+  predict_proba = model_pipeline.predict_proba(X_train)[:, 1]
+  predict = model_pipeline.predict(X_train)
 
-acc_train = accuracy_score(y_train, predict)
-roc = roc_auc_score(y_train, predict_proba)
-train_curve = roc_curve(y_train, predict_proba)
+  acc_train = accuracy_score(y_train, predict)
+  roc = roc_auc_score(y_train, predict_proba)
+  train_curve = roc_curve(y_train, predict_proba)
 
-print(f'train acc: {acc_train}')
-print(f'train AUC: {roc}')
+  print(f'train acc: {acc_train}')
+  print(f'train AUC: {roc}')
 
-# %%
 
-test_predict_proba = model_pipeline.predict_proba(X_test)[:, 1]
-test_predict = model_pipeline.predict(X_test)
+  test_predict_proba = model_pipeline.predict_proba(X_test)[:, 1]
+  test_predict = model_pipeline.predict(X_test)
 
-acc_test = accuracy_score(y_test, test_predict)
-roc_test = roc_auc_score(y_test, test_predict_proba)
-test_curve = roc_curve(y_test, test_predict_proba)
+  acc_test = accuracy_score(y_test, test_predict)
+  roc_test = roc_auc_score(y_test, test_predict_proba)
+  test_curve = roc_curve(y_test, test_predict_proba)
 
-print(f'test acc: {acc_test}')
-print(f'test AUC: {roc_test}')
-# %%
-X_oot = oot[feature_list].copy()
-oot_predict_proba = model_pipeline.predict_proba(X_oot)[:, 1]
-oot_predict = model_pipeline.predict(X_oot)
+  print(f'test acc: {acc_test}')
+  print(f'test AUC: {roc_test}')
 
-acc_oot = accuracy_score(oot[target_col], oot_predict)
-roc_oot = roc_auc_score(oot[target_col], oot_predict_proba)
-ooc_curve = roc_curve(oot[target_col], oot_predict_proba)
+  X_oot = oot[feature_list].copy()
+  oot_predict_proba = model_pipeline.predict_proba(X_oot)[:, 1]
+  oot_predict = model_pipeline.predict(X_oot)
 
-print(f'oot acc: {acc_oot}')
-print(f'oot AUC: {roc_oot}')
+  acc_oot = accuracy_score(oot[target_col], oot_predict)
+  roc_oot = roc_auc_score(oot[target_col], oot_predict_proba)
+  ooc_curve = roc_curve(oot[target_col], oot_predict_proba)
+
+  print(f'oot acc: {acc_oot}')
+  print(f'oot AUC: {roc_oot}')
+
+  mlflow.log_metrics({
+    "acc_train": acc_train,
+    "auc_train": roc,
+    "acc_test": acc_test,
+    "auc_test": roc_test,
+    "acc_oot": acc_oot,
+    "auc_oot": roc_oot,
+  })
  
+# %%
+plt.figure(figsize=(10, 8))
+plt.plot(train_curve[0], train_curve[1], 
+  label=f'Train ROC (AUC = {roc:.3f})', 
+  linewidth=2)
+
+plt.plot(test_curve[0], test_curve[1], 
+  label=f'Test ROC (AUC = {roc_test:.3f})', 
+  linewidth=2)
+
+plt.plot(ooc_curve[0], ooc_curve[1], 
+  label=f'OOT ROC (AUC = {roc_oot:.3f})', 
+  linewidth=2)
+
+plt.xlabel('False Positive Rate', fontsize=12)
+plt.ylabel('True Positive Rate', fontsize=12)
+plt.title('ROC Curves - Train vs Test vs OOT', fontsize=14)
+plt.legend(loc='lower right')
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+# %%
+metrics_comparison = pd.DataFrame({
+    'Dataset': ['Train', 'Test', 'OOT'],
+    'Accuracy': [acc_train, acc_test, acc_oot],
+    'AUC': [roc, roc_test, roc_oot]
+})
+print("\nMetrics Comparison:")
+print(metrics_comparison.to_string(index=False))
