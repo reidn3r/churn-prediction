@@ -1,10 +1,16 @@
 # %%
 import pandas as pd
+import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 import mlflow
 
-mlflow_uri = "http://localhost:5000/"
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+mlflow_uri = os.getenv("MLFLOW_TRACKING_URI")
 mlflow_xp_id = 1
 
 mlflow.set_tracking_uri(mlflow_uri)
@@ -15,9 +21,8 @@ sns.set_palette("husl")
 
 pd.options.display.max_columns = 100
 pd.options.display.max_rows = 100
-
 # %%
-path = "/home/reidner/dev/portfolio/ml@tmw_churn/data/abt_churn.csv"
+path = os.getenv("DATA_PATH")
 df = pd.read_csv(path)
 
 print(f'df shape: {df.shape}')
@@ -36,7 +41,6 @@ oot = df[df['dtRef'] == dates.index[-1]].copy()
 
 print(f'oot shape: {oot.shape}')
 oot.head()
-
 # %%
 df_train = df[df['dtRef'] != dates.index[-1]].copy()
 print(f'train shape: {df_train.shape}')
@@ -51,7 +55,6 @@ X_train, X_test, y_train, y_test = train_test_split(X, y,
   shuffle=True,
   random_state=42, 
   )
-
 
 print(f'xtrain shape: {X_train.shape}')
 print(f'xtest shape: {X_test.shape}')
@@ -103,7 +106,6 @@ _ = plot_tree(
   class_names = ["Nao Churn", "Churn"],
   filled=True,
   )
-
 # %%
 #Feature Importance
 dtf = DecisionTreeClassifier(random_state=42)
@@ -111,18 +113,16 @@ dtf.fit(X_train, y_train)
 
 importance = pd.Series(dtf.feature_importances_, index=X_train.columns)
 
-# %%
 fig, ax = plt.subplots(figsize=(8, 12))
 sns.barplot(
-    x=importance.sort_values(ascending=False).values,
-    y=importance.sort_values(ascending=False).index,
-    ax=ax
+  x=importance.sort_values(ascending=False).values,
+  y=importance.sort_values(ascending=False).index,
+  ax=ax
 )
 ax.set_title("Feature Importance")
 ax.set_xlabel("Importance")
 plt.tight_layout()
 plt.show()
-
 # %%
 importance_sum = (
     importance
@@ -132,19 +132,20 @@ importance_sum = (
 )
 importance_sum['acumulada'] = importance_sum['importance'].cumsum()
 importance_sum
-
 # %%
 selected_features = importance_sum[importance_sum['acumulada'] < 0.95]
 feature_list = selected_features['feature'].to_list()
 
 X_train = X_train[feature_list].copy()
 X_test = X_test[feature_list].copy()
+X_oot = oot[feature_list].copy()
 # %%
 from sklearn import pipeline
-from sklearn.ensemble import AdaBoostClassifier
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
 from sklearn.linear_model import LogisticRegression
 from feature_engine import discretisation, encoding
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
+from sklearn.model_selection import GridSearchCV
 
 tree_discretisation = discretisation.DecisionTreeDiscretiser(
   variables=feature_list, 
@@ -158,23 +159,42 @@ ohe = encoding.OneHotEncoder(
   ignore_format=True,
   )
 
-model = AdaBoostClassifier(
-  random_state=42,
-  learning_rate=1e-3,
-  n_estimators=400
+model = RandomForestClassifier(random_state=42,)
+
+# model = AdaBoostClassifier(
+#   random_state=42,
+#   learning_rate=1e-3,
+# )
+
+grid_params = {
+  "n_estimators": [400, 600],
+  "max_depth": [50, 200, 600],
+  "min_samples_leaf": [20, 50, 100]
+}
+
+grid = GridSearchCV(
+  estimator=model,
+  param_grid=grid_params,
+  cv=3,
+  scoring="roc_auc",
+  verbose=3
 )
 
-# model = LogisticRegression(random_state=42)
+model_name = model.__class__.__name__
+ohe_name = "One Hot"
+discretizer_name = "Discretizer"
+gs_name = grid.__class__.__name__
 
+# model = LogisticRegression(random_state=42)
 model_pipeline = pipeline.Pipeline(
   steps=[
-    ('Discretizer', tree_discretisation),
-    ('One Hot', ohe),
-    ('Logistic Regression', model ),
+    (discretizer_name, tree_discretisation),
+    (ohe_name, ohe),
+    (gs_name, grid),
   ],
-  )
+)
 
-with mlflow.start_run(run_name=model.__str__()):
+with mlflow.start_run(run_name=model_name):
   mlflow.sklearn.autolog()
   model_pipeline.fit(X_train, y_train)
 
@@ -185,10 +205,6 @@ with mlflow.start_run(run_name=model.__str__()):
   roc = roc_auc_score(y_train, predict_proba)
   train_curve = roc_curve(y_train, predict_proba)
 
-  print(f'train acc: {acc_train}')
-  print(f'train AUC: {roc}')
-
-
   test_predict_proba = model_pipeline.predict_proba(X_test)[:, 1]
   test_predict = model_pipeline.predict(X_test)
 
@@ -196,19 +212,12 @@ with mlflow.start_run(run_name=model.__str__()):
   roc_test = roc_auc_score(y_test, test_predict_proba)
   test_curve = roc_curve(y_test, test_predict_proba)
 
-  print(f'test acc: {acc_test}')
-  print(f'test AUC: {roc_test}')
-
-  X_oot = oot[feature_list].copy()
   oot_predict_proba = model_pipeline.predict_proba(X_oot)[:, 1]
   oot_predict = model_pipeline.predict(X_oot)
 
   acc_oot = accuracy_score(oot[target_col], oot_predict)
   roc_oot = roc_auc_score(oot[target_col], oot_predict_proba)
   ooc_curve = roc_curve(oot[target_col], oot_predict_proba)
-
-  print(f'oot acc: {acc_oot}')
-  print(f'oot AUC: {roc_oot}')
 
   mlflow.log_metrics({
     "acc_train": acc_train,
@@ -219,6 +228,17 @@ with mlflow.start_run(run_name=model.__str__()):
     "auc_oot": roc_oot,
   })
  
+# %%
+gs_results = (
+  pd
+    .DataFrame(grid.cv_results_)
+    .sort_values(by="rank_test_score", ascending=True)
+  )
+
+print(f"Melhor params: {grid.best_params_}")
+print(f"Melhor AUC: {grid.best_score_:.4f}")
+
+gs_results.head()
 # %%
 plt.figure(figsize=(10, 8))
 plt.plot(train_curve[0], train_curve[1], 
@@ -233,6 +253,8 @@ plt.plot(ooc_curve[0], ooc_curve[1],
   label=f'OOT ROC (AUC = {roc_oot:.3f})', 
   linewidth=2)
 
+plt.plot([0,1], [0,1], '--', color="black")
+
 plt.xlabel('False Positive Rate', fontsize=12)
 plt.ylabel('True Positive Rate', fontsize=12)
 plt.title('ROC Curves - Train vs Test vs OOT', fontsize=14)
@@ -242,10 +264,28 @@ plt.tight_layout()
 plt.show()
 
 # %%
-metrics_comparison = pd.DataFrame({
-    'Dataset': ['Train', 'Test', 'OOT'],
-    'Accuracy': [acc_train, acc_test, acc_oot],
-    'AUC': [roc, roc_test, roc_oot]
-})
-print("\nMetrics Comparison:")
-print(metrics_comparison.to_string(index=False))
+from sklearn.metrics import precision_recall_curve,  classification_report
+
+probs = model_pipeline.predict_proba(X_test)[:, 1]
+
+precisions, recalls, thresholds = precision_recall_curve(y_test, probs)
+f1s = 2*(precisions * recalls)/(precisions + recalls)
+
+best_f1_idx = np.argmax(f1s)
+best_threshold = thresholds[best_f1_idx]
+print(f'Optimal threshold: {best_threshold}')
+# %%
+plt.figure(figsize=(10, 6))
+plt.plot(thresholds, precisions[:-1], label="Precisions")
+plt.plot(thresholds, recalls[:-1], label="Recalls")
+plt.plot(thresholds, f1s[:-1], label="F1 Score")
+plt.axvline(x=best_threshold, color="red", label="Best Threshold")
+
+plt.legend()
+plt.xlabel("Thresholds")
+plt.title("Precision x Recall x F1")
+
+# %%
+oot_proba = model_pipeline.predict_proba(X_oot)[:, 1]
+oot_pred_threshold = (oot_proba >= best_threshold).astype(int)
+print(classification_report(oot[target_col], oot_pred_threshold))
