@@ -78,18 +78,7 @@ Todos as execuções são rastreadas, registrando automaticamente parâmetros, m
 |---|---|
 | `auc_train` | AUC-ROC no conjunto de treino |
 | `auc_test` | AUC-ROC no conjunto de teste |
-| `auc_oot` | AUC-ROC no OOT — principal indicador de generalização temporal |
+| `auc_oot` | AUC-ROC no OOT |
 | `acc_train/test/oot` | Acurácia em cada partição |
 
 ![MLflow](assets/mlflow.png)
-
-
-## Stack
-
-| Lib | Uso |
-|---|---|
-| `scikit-learn` | Modelos, pipeline, métricas, GridSearchCV |
-| `feature-engine` | Discretização supervisionada, OHE |
-| `mlflow` | Experiment tracking, model registry |
-| `pandas` / `numpy` | Manipulação de dados |
-| `seaborn` / `matplotlib` | Visualizações exploratórias |
